@@ -7,6 +7,10 @@ substitutions:
   devicename: "LG Living Room" # XXX
   # The input temperature sensor in HA.
   temperature_sensor_entity_id: sensor.my_sensor # XXX
+  # Minimum allowed temperature setpoint for this device (int)
+  minimum_setpoint: "18" # XXX
+  # Maximum allowed temperature setpoint for this device (int)
+  maximum_setpoint: "30" # XXX
 
 # Encryption key for HA. See https://esphome.io/components/api.html.
 api:

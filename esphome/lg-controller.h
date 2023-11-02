@@ -36,6 +36,10 @@ class LgController final : public climate::Climate, public Component {
 
     LgSwitch purifier_;
     LgSwitch internal_thermistor_;
+    LgSwitch scale_over_setpoint_;
+
+    int minimum_setpoint_;
+    int maximum_setpoint_;
 
     uint8_t recv_buf_[MsgLen] = {};
     uint32_t recv_buf_len_ = 0;
@@ -50,11 +54,16 @@ class LgController final : public climate::Climate, public Component {
 
 public:
     LgController(esphome::uart::UARTComponent* serial,
-                 esphome::sensor::Sensor* temperature_sensor)
+                 esphome::sensor::Sensor* temperature_sensor,
+                 const std::string &minimum_setpoint_str,
+                 const std::string &maximum_setpoint_str)
       : serial_(serial),
         temperature_sensor_(temperature_sensor),
         purifier_(this),
-        internal_thermistor_(this)
+        internal_thermistor_(this),
+        scale_over_setpoint_(this),
+        minimum_setpoint_(std::stof(minimum_setpoint_str)),
+        maximum_setpoint_(std::stof(maximum_setpoint_str))
     {}
 
     float get_setup_priority() const override {
@@ -81,6 +90,9 @@ public:
 
         internal_thermistor_.set_icon("mdi:thermometer");
         internal_thermistor_.restore_and_set_mode(esphome::switch_::SWITCH_RESTORE_DEFAULT_OFF);
+
+        scale_over_setpoint_.set_icon("mdi:speedometer");
+        scale_over_setpoint_.restore_and_set_mode(esphome::switch_::SWITCH_RESTORE_DEFAULT_OFF);
 
         while (serial_->available() > 0) {
             uint8_t b;
@@ -137,8 +149,8 @@ public:
         traits.set_supports_current_temperature(true);
         traits.set_supports_two_point_target_temperature(false);
         traits.set_supports_action(false);
-        traits.set_visual_min_temperature(18);
-        traits.set_visual_max_temperature(30);
+        traits.set_visual_min_temperature(minimum_setpoint_);
+        traits.set_visual_max_temperature(maximum_setpoint_);
         traits.set_visual_current_temperature_step(0.5);
         traits.set_visual_target_temperature_step(0.5);
         return traits;
@@ -165,6 +177,7 @@ public:
         return {
             &purifier_,
             &internal_thermistor_,
+            &scale_over_setpoint_,
         };
     }
 
@@ -174,6 +187,23 @@ private:
         if (isnan(temp) || temp == 0) {
             return {};
         }
+
+        // If we use an external sensor, check the "scale over setpoint" flag
+        if (!internal_thermistor_.state && scale_over_setpoint_.state) {
+            float target = this->target_temperature;
+            if (target < minimum_setpoint_) {
+                target = minimum_setpoint_;
+            } else if (target > maximum_setpoint_) {
+                target = maximum_setpoint_;
+            }
+
+            if (temp>target) {
+                float adjust = std::min(5.0f,(temp-target)*10.0f);
+                ESP_LOGD(TAG, "scale_over_setpoint temp>target, add %f to original %f", adjust, temp);
+                temp += adjust;
+            }
+        }
+
         if (temp < 11) {
             return 11;
         }
@@ -273,10 +303,10 @@ private:
         send_buf_[4] = last_recv_status_[4];
 
         float target = this->target_temperature;
-        if (target < 18) {
-            target = 18;
-        } else if (target > 30) {
-            target = 30;
+        if (target < minimum_setpoint_) {
+            target = minimum_setpoint_;
+        } else if (target > maximum_setpoint_) {
+            target = maximum_setpoint_;
         }
 
         // Byte 5. Unchanged except for the low bit which indicates the target temperature has a

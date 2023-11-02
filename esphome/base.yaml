@@ -44,11 +44,12 @@ switch:
     switches:
       - name: Air Purifier
       - name: Internal Thermistor
+      - name: Scale Over Target Temp (Ext. Sensor)
 
 climate:
   - platform: custom
     lambda: |-
-      auto* controller = new LgController(id(ac_serial), id(temperature_sensor));
+      auto* controller = new LgController(id(ac_serial), id(temperature_sensor), "${minimum_setpoint}", "${maximum_setpoint}");
       App.register_component(controller);
       return {controller};
     climates:
