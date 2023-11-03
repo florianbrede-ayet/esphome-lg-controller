@@ -36,10 +36,12 @@ class LgController final : public climate::Climate, public Component {
 
     LgSwitch purifier_;
     LgSwitch internal_thermistor_;
-    LgSwitch scale_over_setpoint_;
+    LgSwitch heating_setpoint_hysteresis_;
 
     int minimum_setpoint_;
     int maximum_setpoint_;
+
+    float room_temp_hysteresis_offset_ = 0;
 
     uint8_t recv_buf_[MsgLen] = {};
     uint32_t recv_buf_len_ = 0;
@@ -61,9 +63,9 @@ public:
         temperature_sensor_(temperature_sensor),
         purifier_(this),
         internal_thermistor_(this),
-        scale_over_setpoint_(this),
-        minimum_setpoint_(std::stof(minimum_setpoint_str)),
-        maximum_setpoint_(std::stof(maximum_setpoint_str))
+        heating_setpoint_hysteresis_(this),
+        minimum_setpoint_(std::stoi(minimum_setpoint_str)),
+        maximum_setpoint_(std::stoi(maximum_setpoint_str))
     {}
 
     float get_setup_priority() const override {
@@ -91,8 +93,8 @@ public:
         internal_thermistor_.set_icon("mdi:thermometer");
         internal_thermistor_.restore_and_set_mode(esphome::switch_::SWITCH_RESTORE_DEFAULT_OFF);
 
-        scale_over_setpoint_.set_icon("mdi:speedometer");
-        scale_over_setpoint_.restore_and_set_mode(esphome::switch_::SWITCH_RESTORE_DEFAULT_OFF);
+        heating_setpoint_hysteresis_.set_icon("mdi:speedometer");
+        heating_setpoint_hysteresis_.restore_and_set_mode(esphome::switch_::SWITCH_RESTORE_DEFAULT_OFF);
 
         while (serial_->available() > 0) {
             uint8_t b;
@@ -177,19 +179,18 @@ public:
         return {
             &purifier_,
             &internal_thermistor_,
-            &scale_over_setpoint_,
+            &heating_setpoint_hysteresis_,
         };
     }
 
 private:
-    optional<float> get_room_temp() const {
-        float temp = temperature_sensor_->get_state();
-        if (isnan(temp) || temp == 0) {
-            return {};
-        }
 
-        // If we use an external sensor, check the "scale over setpoint" flag
-        if (!internal_thermistor_.state && scale_over_setpoint_.state) {
+    float update_heating_room_temp_hysteresis_offset(float temp) const {
+        // If we use an external sensor, check the "hysteresis" flag
+        // When approaching the setpoint, we artifically scale up the reported temperature
+        // By doing so, we can achieve a stable ~0.3°C oscillation around the setpoint instead of
+        // +2°C for "stupid" indoor units, tested on LG Artcool Gallery and a 4-Way-Cassette.
+        if (!internal_thermistor_.state && heating_setpoint_hysteresis_.state) {
             float target = this->target_temperature;
             if (target < minimum_setpoint_) {
                 target = minimum_setpoint_;
@@ -197,11 +198,30 @@ private:
                 target = maximum_setpoint_;
             }
 
-            if (temp>target) {
-                float adjust = std::min(5.0f,(temp-target)*10.0f);
-                ESP_LOGD(TAG, "scale_over_setpoint temp>target, add %f to original %f", adjust, temp);
-                temp += adjust;
+            if (temp>target-0.35f) {
+                float adjust = (temp-(target-0.2))*3.0f;
+                if (temp>target) {
+                    adjust += (temp-target)*2.0f;
+                }
+                adjust = std::min(5.0f, adjust);
+
+                ESP_LOGD(TAG, "update_heating_room_temp_hysteresis_offset - add %f °C", adjust);
+
+                if (adjust+temp > 35) {
+                    adjust = 35-temp;
+                }
+
+                return adjust;
             }
+        }
+        
+        return 0;
+    }
+
+    optional<float> get_room_temp() const {
+        float temp = temperature_sensor_->get_state();
+        if (isnan(temp) || temp == 0) {
+            return {};
         }
 
         if (temp < 11) {
@@ -321,17 +341,23 @@ private:
         enum ThermistorSetting { Unit = 0, Controller = 1, TwoTH = 2 };
         ThermistorSetting thermistor =
             internal_thermistor_.state ? ThermistorSetting::Unit : ThermistorSetting::Controller;
+
         float temp;
         if (auto maybe_temp = get_room_temp()) {
             temp = *maybe_temp;
+            if (this->mode == climate::CLIMATE_MODE_HEAT) {
+                room_temp_hysteresis_offset_ = update_heating_room_temp_hysteresis_offset(temp);
+            } else {
+                room_temp_hysteresis_offset_ = 0;
+            }
+
         } else {
-            // Room temperature isn't available. Use the unit's thermistor and send something
-            // reasonable.
-            thermistor = ThermistorSetting::Unit;
             temp = 20;
+            room_temp_hysteresis_offset_ = 0;
         }
+
         send_buf_[6] = (thermistor << 4) | ((uint8_t(target) - 15) & 0xf);
-        send_buf_[7] = (last_recv_status_[7] & 0xC0) | uint8_t((temp - 10) * 2);
+        send_buf_[7] = (last_recv_status_[7] & 0xC0) | uint8_t(((temp+room_temp_hysteresis_offset_) - 10) * 2);
 
         // Bytes 8-11.
         send_buf_[8] = last_recv_status_[8];
@@ -406,8 +432,8 @@ private:
         }
 
         float unit_temp = float(buffer[7] & 0x3F) / 2 + 10;
-        if (this->current_temperature != unit_temp) {
-            this->current_temperature = unit_temp;
+        if (this->current_temperature != unit_temp-room_temp_hysteresis_offset_) {
+            this->current_temperature = unit_temp-room_temp_hysteresis_offset_;
             publish_state();
         }
 

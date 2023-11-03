@@ -44,7 +44,7 @@ switch:
     switches:
       - name: Air Purifier
       - name: Internal Thermistor
-      - name: Scale Over Target Temp (Ext. Sensor)
+      - name: Heating Setpoint Hysteresis (Ext. Sensor Only)
 
 climate:
   - platform: custom
