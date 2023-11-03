@@ -432,7 +432,7 @@ private:
         }
 
         float unit_temp = float(buffer[7] & 0x3F) / 2 + 10;
-        if (this->current_temperature != unit_temp-room_temp_hysteresis_offset_) {
+        if (internal_thermistor_.state && this->current_temperature != unit_temp-room_temp_hysteresis_offset_) {
             this->current_temperature = unit_temp-room_temp_hysteresis_offset_;
             publish_state();
         }
